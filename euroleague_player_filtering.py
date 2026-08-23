@@ -231,6 +231,8 @@ with tab1:
         .head(top_n)
     )
 
+    st.title("Advanced Player Filter")
+
     # Advanced filter table
     qualified = filter_df[filter_df[volume_stat] >= min_volume]
     st.subheader(f"Best {rate_stat} among players with {volume_stat} ≥ {min_volume}")
