@@ -16,7 +16,7 @@ DATA_DIR = "data_cache"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
-# --- Data loading ------------------------------------------------------
+# Data loading
 
 def _fetch_game_with_retry(shot_data: ShotData, season: int, game_code: int,
                             max_retries: int = 5) -> pd.DataFrame:
@@ -45,7 +45,7 @@ def _fetch_game_with_retry(shot_data: ShotData, season: int, game_code: int,
 # Load a season of shot data from disk cache
 
 @st.cache_data(show_spinner="Loading full season shot data...") 
-def load_shot_data(season: int, n_games: int = 399) -> pd.DataFrame: #399 gmaes have been played in 2025-26 season
+def load_shot_data(season: int, n_games: int = 399) -> pd.DataFrame: #399 games have been played in 2025-26 season
     """Load a season of shot data, from disk cache if we have it."""
     parquet_path = os.path.join(DATA_DIR, f"shots_{season}.parquet")
     if os.path.exists(parquet_path):
@@ -168,11 +168,11 @@ def plot_shot_chart(player_shots: pd.DataFrame, player_name: str):
 shots_df = load_shot_data(SEASON)
 player_df = load_player_stats(SEASON)
 
-# player.team.name sometimes comes back as "OldName;NewName" for teams
-# renamed mid-season - keep only the current name.
+# player.team.name sometimes comes back as "OldName;NewName" for teams (eg. Nick Clathes - AS Monaco; KK Partizan)
+# keeps only the current name.
 player_df["player.team.name"] = player_df["player.team.name"].str.split(";").str[-1]
 
-# Shot data only has team codes (e.g. "IST"); map to full names for display.
+# Shot data only has team codes (e.g. "IST" for Anadolu Efes Istanbul); map to full names for display
 _team_code_to_name = build_team_code_to_name_map(SEASON)
 shots_df["TEAM_NAME"] = shots_df["TEAM"].map(_team_code_to_name).fillna(shots_df["TEAM"])
 
@@ -193,7 +193,7 @@ with tab1:
     filter_df = player_df.copy()
     filter_df["Min_display"] = filter_df["minutesPlayed"].apply(format_minutes)
 
-    # --- Sidebar controls ---
+    # Sidebar controls
     max_mins = st.sidebar.number_input(
         "Max Minutes Played:", min_value=1, max_value=40, value=15, step=1
     )
@@ -218,17 +218,7 @@ with tab1:
         ["freeThrowsPercentage", "twoPointersPercentage", "threePointersPercentage"]
     )
 
-    # --- Advanced filter table ---
-    qualified = filter_df[filter_df[volume_stat] >= min_volume]
-    st.subheader(f"Best {rate_stat} among players with {volume_stat} ≥ {min_volume}")
-    st.dataframe(
-        qualified[["player.name", "player.team.name", volume_stat, rate_stat]]
-        .sort_values(rate_stat, ascending=False)
-        .reset_index(drop=True)
-        .head(10)
-    )
-
-    # --- Main filtered table ---
+    # Main filtered table
     filtered = filter_df[filter_df["minutesPlayed"] <= max_mins]
     if selected_team != "All":
         filtered = filtered[filtered["player.team.name"] == selected_team]
@@ -240,6 +230,18 @@ with tab1:
         .reset_index(drop=True)
         .head(top_n)
     )
+
+    # Advanced filter table
+    qualified = filter_df[filter_df[volume_stat] >= min_volume]
+    st.subheader(f"Best {rate_stat} among players with {volume_stat} ≥ {min_volume}")
+    st.dataframe(
+        qualified[["player.name", "player.team.name", volume_stat, rate_stat]]
+        .sort_values(rate_stat, ascending=False)
+        .reset_index(drop=True)
+        .head(10)
+    )
+
+
 
 with tab2:
     st.title("Shot Chart")
