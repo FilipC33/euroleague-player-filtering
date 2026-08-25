@@ -73,10 +73,10 @@ def load_shot_data(season: int, n_games: int = 399) -> pd.DataFrame: #399 games 
     df.to_parquet(parquet_path)
     return df
 
+# Load per-game player stats, from disk cache if we have it
 
 @st.cache_data(show_spinner="Loading player stats...")
 def load_player_stats(season: int) -> pd.DataFrame:
-    """Load per-game player stats, from disk cache if we have it."""
     parquet_path = os.path.join(DATA_DIR, f"player_stats_{season}.parquet")
     if os.path.exists(parquet_path):
         return pd.read_parquet(parquet_path)
@@ -91,49 +91,185 @@ def load_player_stats(season: int) -> pd.DataFrame:
     df.to_parquet(parquet_path)
     return df
 
+# Map team code (e.g. "IST" for Anadolu Efes Istanbul) to full team name
 
 @st.cache_data(show_spinner="Loading team names...")
 def build_team_code_to_name_map(season: int) -> dict:
-    """Map team code (e.g. "IST") to full team name, via standings."""
     standings = Standings("E")
     df = standings.get_standings(season=season, round_number=1)
     return dict(zip(df["club.code"], df["club.name"]))
 
-
-# Court + shot chart
-# Draw a FIBA half-court in the same cm coordinate system as the shot data.
+ # Draw a FIBA half-court, in the same cm coordinate system as the shot data
 
 def draw_court(ax):
-    """Draw a FIBA half-court, in the same cm coordinate system as the shot data."""
     ax.set_facecolor("#0e1117")
     line_color = "white"
     lw = 1.5
 
-    ax.add_patch(Rectangle((-750, -150), 1500, 1550, fill=False,
-                            edgecolor=line_color, linewidth=lw))
-    ax.add_patch(Circle((0, 0), radius=22.5, fill=False,
-                         edgecolor=line_color, linewidth=lw))
+    # Outer court boundary & basket / backboard
+    ax.add_patch(
+        Rectangle(
+            (-750, -150),
+            1500,
+            1550,
+            fill=False,
+            edgecolor=line_color,
+            linewidth=lw,
+        )
+    )
+    ax.add_patch(
+        Circle(
+            (0, 0), radius=22.5, fill=False, edgecolor=line_color, linewidth=lw
+        )
+    )
     ax.plot([-90, 90], [-15, -15], color=line_color, linewidth=lw)
-    ax.add_patch(Arc((0, 0), 250, 250, theta1=0, theta2=180,
-                      edgecolor=line_color, linewidth=lw))
-    ax.add_patch(Rectangle((-245, -150), 490, 580, fill=False,
-                            edgecolor=line_color, linewidth=lw))
-    ax.add_patch(Arc((0, 430), 360, 360, theta1=0, theta2=180,
-                      edgecolor=line_color, linewidth=lw))
-    ax.add_patch(Arc((0, 430), 360, 360, theta1=180, theta2=360,
-                      edgecolor=line_color, linewidth=lw, linestyle="dashed"))
+    ax.add_patch(
+        Arc(
+            (0, 0),
+            250,
+            250,
+            theta1=0,
+            theta2=180,
+            edgecolor=line_color,
+            linewidth=lw,
+        )
+    )
 
-    corner_y = 90
+    # Key / paint area & free-throw circle
+    ax.add_patch(
+        Rectangle(
+            (-245, -150),
+            490,
+            580,
+            fill=False,
+            edgecolor=line_color,
+            linewidth=lw,
+        )
+    )
+    ax.add_patch(
+        Arc(
+            (0, 430),
+            360,
+            360,
+            theta1=0,
+            theta2=180,
+            edgecolor=line_color,
+            linewidth=lw,
+        )
+    )
+    ax.add_patch(
+        Arc(
+            (0, 430),
+            360,
+            360,
+            theta1=180,
+            theta2=360,
+            edgecolor=line_color,
+            linewidth=lw,
+            linestyle="dashed",
+        )
+    )
+
+    # 3-Point Line 
+    corner_y = 141.51
     ax.plot([-660, -660], [-150, corner_y], color=line_color, linewidth=lw)
     ax.plot([660, 660], [-150, corner_y], color=line_color, linewidth=lw)
-    ax.add_patch(Arc((0, 0), 1350, 1350, theta1=12, theta2=168,
-                      edgecolor=line_color, linewidth=lw))
+    ax.add_patch(
+        Arc(
+            (0, 0),
+            1350,
+            1350,
+            theta1=12.08,
+            theta2=167.92,
+            edgecolor=line_color,
+            linewidth=lw,
+        )
+    )
 
     ax.set_xlim(-800, 800)
     ax.set_ylim(-200, 900)
     ax.set_aspect("equal")
     ax.axis("off")
 
+
+def assign_shot_zone(df):
+    df = df.copy()
+
+    x = df["COORD_X"]
+    y = df["COORD_Y"]
+
+    distance = (x**2 + y**2) ** 0.5
+
+    # 1. Rim
+    rim = distance <= 100
+
+    # 2. Paint
+    paint = (
+        (x.abs() <= 245) &
+        (y <= 430) &
+        (~rim)
+    )
+
+    # 3. Corner 3
+    corner_3 = (
+        (x.abs() >= 660) &
+        (y <= 142)
+    )
+
+    # 4. Above-the-break 3
+    above_break_3 = (
+        (distance >= 675) &
+        (~corner_3)
+    )
+
+    # 5. Midrange
+    midrange = ~(
+        rim |
+        paint |
+        corner_3 |
+        above_break_3
+    )
+
+    df["Zone"] = "Midrange"
+
+    df.loc[rim, "Zone"] = "Rim"
+    df.loc[paint, "Zone"] = "Paint"
+    df.loc[corner_3, "Zone"] = "Corner 3"
+    df.loc[above_break_3, "Zone"] = "Above-the-break 3"
+
+    return df
+
+def get_shot_profile(team_shots):
+
+    team_shots = assign_shot_zone(team_shots)
+
+    profile = (
+        team_shots
+        .groupby("Zone")
+        .agg(
+            FGA=("Result", "count"),
+            FGM=("Result", lambda x: (x == "Made").sum())
+        )
+        .reset_index()
+    )
+
+    profile["FG%"] = profile["FGM"] / profile["FGA"] * 100
+
+    zone_order = [
+        "Rim",
+        "Paint",
+        "Midrange",
+        "Corner 3",
+        "Above-the-break 3"
+    ]
+
+    profile["Zone"] = pd.Categorical(
+        profile["Zone"],
+        categories=zone_order,
+        ordered=True
+    )
+
+    return profile.sort_values("Zone")
 
 def plot_shot_chart(player_shots: pd.DataFrame, player_name: str):
     fig, ax = plt.subplots(figsize=(8, 7.5))
@@ -231,7 +367,7 @@ with tab1:
         .head(top_n)
     )
 
-    st.title("Advanced Player Filter")
+    st.title("Advanced Player Filter") 
 
     # Advanced filter table
     qualified = filter_df[filter_df[volume_stat] >= min_volume]
@@ -248,14 +384,72 @@ with tab1:
 with tab2:
     st.title("Shot Chart")
 
-    choose_team = st.selectbox("Choose Team:", sorted(shots_df["TEAM_NAME"].unique().tolist()))
+    choose_team = st.selectbox(
+        "Choose Team:",
+        sorted(shots_df["TEAM_NAME"].unique().tolist())
+    )
 
-    players_on_team = shots_df[shots_df["TEAM_NAME"] == choose_team]["PLAYER"].unique().tolist()
-    choose_player = st.selectbox("Choose Player:", sorted(players_on_team))
+    # Players on selected team
+    players_on_team = shots_df[
+        shots_df["TEAM_NAME"] == choose_team
+    ]["PLAYER"].unique().tolist()
 
-    # -1, -1 coordinates mean no real shot location (e.g. free throws).
-    player_shots = shots_df[
-        (shots_df["PLAYER"] == choose_player) & (shots_df["COORD_X"] != -1)
-    ]
+    # Put team option first, followed by players
+    player_options = [f"{choose_team} — All Players"] + sorted(players_on_team)
 
-    st.pyplot(plot_shot_chart(player_shots, choose_player))
+    choose_player = st.selectbox(
+        "Choose Player:",
+        player_options
+    )
+
+    # --------------------------------
+    # SHOT DATA TO DISPLAY
+    # --------------------------------
+
+    if choose_player == f"{choose_team} — All Players":
+        # Team seasonal shots
+        selected_shots = shots_df[
+            (shots_df["TEAM_NAME"] == choose_team) &
+            (shots_df["COORD_X"] != -1)
+        ]
+
+        chart_title = f"{choose_team} — All Players"
+
+    else:
+        # Individual player's seasonal shots
+        selected_shots = shots_df[
+            (shots_df["PLAYER"] == choose_player) &
+            (shots_df["TEAM_NAME"] == choose_team) &
+            (shots_df["COORD_X"] != -1)
+        ]
+
+        chart_title = choose_player
+
+    # --------------------------------
+    # SHOT CHART
+    # --------------------------------
+
+    st.pyplot(
+        plot_shot_chart(selected_shots, chart_title)
+    )
+
+    st.divider()
+
+    # --------------------------------
+    # Shot PROFILE
+    # --------------------------------
+
+    if choose_player == f"{choose_team} — All Players":
+        team_shots = selected_shots
+        st.subheader("Team Shot Profile")
+    else:
+        st.subheader("Player Shot Profile")
+
+
+    profile = get_shot_profile(selected_shots)
+
+    st.dataframe(
+        profile[["Zone", "FGM", "FGA", "FG%"]]
+        .style.format({"FG%": "{:.1f}%"}),
+        hide_index=True
+    )
